@@ -29,20 +29,23 @@ nf_conntrack_ipv4
 nf_conntrack_ipv6
 EOF
 
-# Set mtu of eth0 and eth1 devices to 1300, otherwise there may be issues when using a VPN on the host system.
-cat <<EOF > /etc/systemd/system/ip-set-mtu.service
+if [ #{NETWORK_VM_MTU} -ne 1500 ]; then
+    # Set mtu of eth0 and eth1 devices to 1300, otherwise there may be issues when using a VPN on the host system.
+    cat <<EOF > /etc/systemd/system/ip-set-mtu.service
 [Unit]
 After=network.target
+Before=docker.service
 [Service]
 Type=oneshot
 ExecStart=/bin/bash -c 'ip link set mtu 1300 dev eth0'
 ExecStart=/bin/bash -c 'ip link set mtu 1300 dev eth1'
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
 EOF
-systemctl daemon-reload
-systemctl enable ip-set-mtu.service
-systemctl start ip-set-mtu.service
+    systemctl daemon-reload
+    systemctl enable ip-set-mtu.service
+    systemctl start ip-set-mtu.service
+fi
 SCRIPT
 
 $containerRuntimeConfigScript = <<SCRIPT
@@ -135,33 +138,49 @@ mkdir -p $HOME/.kube
 cp -Rf /etc/kubernetes/admin.conf $HOME/.kube/config
 chown $(id -u):$(id -g) $HOME/.kube/config
 
+if [ "#{KUBE_PROXY_IPVS}" = "true" ]; then
+    kubectl get -n kube-system configmap kube-proxy -o yaml | \
+        sed 's/mode: ""/mode: ipvs/g' | \
+        kubectl apply -f -
+
+    kubectl delete po -n kube-system -l k8s-app=kube-proxy
+fi
+
 case "#{$kube_network}" in
 # canal network
-[Cc][Aa][Nn][Aa][Ll])
+canal)
     echo "Installing Canal CNI ..."
     (
         if [ -n "#{HTTP_PROXY}" ]; then
             export HTTP_PROXY="#{HTTP_PROXY}" HTTPS_PROXY="#{HTTPS_PROXY}" NO_PROXY="#{NO_PROXY}"
         fi
-        curl --retry 5 --fail -s https://docs.projectcalico.org/v3.13/getting-started/kubernetes/installation/hosted/canal/canal.yaml
+        curl --retry 5 --fail -s https://docs.projectcalico.org/v3.14/getting-started/kubernetes/installation/hosted/canal/canal.yaml
     ) | \
-        sed -e 's/canal_iface:.*/canal_iface: "eth1"/' | \
+        sed \
+            -e 's/canal_iface:.*/canal_iface: "eth1"/' \
+            -e 's?10.244.0.0/16?#{POD_NW_CIDR}?g' \
+            -e 's/veth_mtu:.*/veth_mtu: "#{KUBE_NETWORK_MTU}"/g' | \
         kubectl apply -f -
   ;;
-# Calico network: https://docs.projectcalico.org/v3.13/getting-started/kubernetes/installation/calico
-[Cc][Aa][Ll][Ii][Cc][Oo])
+# calico network: https://docs.projectcalico.org/v3.13/getting-started/kubernetes/installation/calico
+calico)
     echo "Installing Calico CNI ..."
     (
         if [ -n "#{HTTP_PROXY}" ]; then
             export HTTP_PROXY="#{HTTP_PROXY}" HTTPS_PROXY="#{HTTPS_PROXY}" NO_PROXY="#{NO_PROXY}"
         fi
-        curl --retry 5 --fail -s https://docs.projectcalico.org/v3.13/manifests/calico.yaml
+        curl --retry 5 --fail -s https://docs.projectcalico.org/v3.14/manifests/calico.yaml
     ) | \
-        sed -e 's?192.168.0.0/16?#{POD_NW_CIDR}?g' | \
+        sed \
+            -e '/CALICO_IPV4POOL_CIDR/s/# //' \
+            -e '/CALICO_IPV4POOL_CIDR/{N;s/# //}' \
+            -e 's?192.168.0.0/16?#{POD_NW_CIDR}?g' \
+            -e 's/veth_mtu:.*/veth_mtu: "#{KUBE_NETWORK_MTU}"/g' | \
         kubectl apply -f -
+        kubectl set -n kube-system env daemonset/calico-node IP_AUTODETECTION_METHOD=interface=eth1
   ;;
 # flannel network
-*)
+flannel)
     echo "Installing Flannel CNI ..."
     (
         if [ -n "#{HTTP_PROXY}" ]; then
@@ -170,7 +189,13 @@ case "#{$kube_network}" in
         curl --retry 5 --fail -s https://raw.githubusercontent.com/coreos/flannel/v0.12.0/Documentation/kube-flannel.yml
     ) | \
         awk '/- --kube-subnet-mgr/{print "        - --iface=eth1"}1' | \
+        sed \
+            -e 's?10.244.0.0/16?#{POD_NW_CIDR}?g' | \
         kubectl apply -f -
+  ;;
+# "none" network
+*)
+    echo "!!WARNING!! 'none' or unknown CNI selected (#{$kube_network}), not installing any CNI (KUBE_NETWORK env var)!"
   ;;
 esac
 
@@ -240,3 +265,7 @@ for url in https://codeberg.org/hjacobs/kube-web-view/raw/commit/1deac0a8f878e25
         kubectl apply -n kube-web-view -f -
 done
 SCRIPT
+
+# Overridable Scripts
+$kubeMasterPostScript = $kubeMasterPostScript.to_s.strip.empty? ? '' : $kubeMasterPostScript
+$postInstallScript = $postInstallScript.to_s.strip.empty? ? '' : $postInstallScript

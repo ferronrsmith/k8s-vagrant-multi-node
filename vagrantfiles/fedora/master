@@ -13,7 +13,8 @@ gpgkey=https://packages.cloud.google.com/yum/doc/yum-key.gpg
 EOF
 
 if [ -n "#{KUBERNETES_VERSION}" ]; then
-    KUBERNETES_PACKAGES="kubelet-#{KUBERNETES_VERSION} kubeadm-#{KUBERNETES_VERSION}"
+    KUBERNETES_VERSION="$(echo "#{KUBERNETES_VERSION}" | sed 's/^v//')"
+    KUBERNETES_PACKAGES="kubelet-${KUBERNETES_VERSION} kubeadm-${KUBERNETES_VERSION}"
 else
     KUBERNETES_PACKAGES="kubelet kubeadm"
 fi
@@ -23,5 +24,5 @@ sed -i 's/SELINUX=enforcing/SELINUX=permissive/g' /etc/selinux/config
 
 # Use yum so we can use this for CentOS too
 yum clean expire-cache
-yum install --nogpgcheck -y net-tools screen tree telnet conntrack socat rsync ${KUBERNETES_PACKAGES}
+yum install --nogpgcheck -y net-tools tree telnet conntrack socat rsync ${KUBERNETES_PACKAGES}
 SCRIPT

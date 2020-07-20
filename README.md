@@ -1,5 +1,7 @@
 # k8s-vagrant-multi-node
 
+[![Build Status](https://travis-ci.org/galexrt/k8s-vagrant-multi-node.svg?branch=master)](https://travis-ci.org/galexrt/k8s-vagrant-multi-node)
+
 This project was based on work from [coolsvap/kubeadm-vagrant](https://github.com/coolsvap/kubeadm-vagrant) by [@coolsvap](https://twitter.com/coolsvap), now it is mostly independent.
 
 A demo of the start and destroy of a cluster can be found here: [README.md Demo section](#demo).
@@ -19,6 +21,9 @@ A demo of the start and destroy of a cluster can be found here: [README.md Demo 
   - [Data inside VM](#data-inside-vm)
   - [Show `make` targets](#show-make-targets)
 - [Variables](#variables)
+- [Troubleshooting](#troubleshooting)
+  - [When usign Virtualbox as the provider `make up` hangs after it is done](#when-usign-virtualbox-as-the-provider-make-up-hangs-after-it-is-done)
+  - ["I have a VPN running on my host machine, what should I look out for?"](#i-have-a-vpn-running-on-my-host-machine-what-should-i-look-out-for)
 - [Demo](#demo)
   - [Start Cluster](#start-cluster)
   - [Destroy Cluster](#destroy-cluster)
@@ -38,14 +43,18 @@ A demo of the start and destroy of a cluster can be found here: [README.md Demo 
   * `openssl` command - Fallback for when `/dev/urandom` is not available.
 * Vagrant (>= `2.2.0`)
   * Tested with `2.2.2` (if you should experience issues, please upgrade to at least this Vagrant version or higher)
+  * Plugins
+    * `vagrant-reload` **REQUIRED** For `BOX_OS=fedora` (set by default) and when using the `vagrant-reload*` targets, the `vagrant-reload` plugin is needed. An automatic attempt to install the plugin is made. To install manually run one of the following commands:
+      * `make vagrant-plugins` or
+      * `vagrant plugin install vagrant-reload`
 * Vagrant Provider (one of the following two is needed)
-  * Virtualbox
-    * Tested with `6.0.0` (if you should experience issues, please upgrade to at least this version or higher)
-    * `VBoxManage` binary in `PATH`.
   * libvirt (`vagrant plugin install vagrant-libvirt`)
     * Tested with `libvirtd` version `5.10.0`.
     * Libvirt support is still a bit experimental and can be unstable (e.g., VMs not getting IPs).
       * Troubleshooting: If your VM creation is hanging at `Waiting for domain to get an IP address...`, using `virsh` run `virsh force reset VM_NAME` (`VM_NAME` can be obtained using `virsh list` command) or in virt-manager `Force Reset` on the VM.
+  * Virtualbox (**WARNING** VirtualBox seems to hang the Makefile randomly for some people, `libvirt` is recommended)
+    * Tested with `6.0.0` (if you should experience issues, please upgrade to at least this version or higher)
+    * `VBoxManage` binary in `PATH`.
 
 > **NOTE** `kubectl` is only needed when the `kubectl` auto configuration is enabled (default is enabled), to disable it set the variable `KUBECTL_AUTO_CONF` to `false`.
 > For more information, see the [Variables](#variables) section.
@@ -53,11 +62,11 @@ A demo of the start and destroy of a cluster can be found here: [README.md Demo 
 ## Hardware Requirements
 
 * Master
-  * CPU: 2 Cores
-  * Memory: 2GB
+  * CPU: 2 Cores (`MASTER_CPUS`)
+  * Memory: 2GB (`MASTER_MEMORY_SIZE_GB`)
 * 1x Node:
-  * CPU: 2 Core
-  * Memory: 2GB
+  * CPU: 1 Core (it is recommended to use at least 2 Cores; `NODE_CPUS`)
+  * Memory: 2GB (it is recommended to use more than 2GB; `NODE_MEMORY_SIZE_GB`)
 
 These resources can be changed by setting the according variables for the `make up` command, see [Variables](#variables) section.
 
@@ -95,11 +104,13 @@ There are multiple sets of Vagrantfiles available (see [`vagrantfiles/`](/vagran
 
 List of currently available Vagrantfile sets:
 
-| Name     | Container Runtime                           | OS Version   | Special Notes                                                                                                                           |
-| -------- | ------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `centos` | [Docker/Moby](https://github.com/moby/moby) | CentOS 7     | N/A                                                                                                                                     |
-| `fedora` | [Docker/Moby](https://github.com/moby/moby) | Fedora 30    | N/A                                                                                                                                     |
-| `ubuntu` | [Docker/Moby](https://github.com/moby/moby) | Ubuntu 18.04 | `canal` is used here due to issues with Ubuntu. Google DNS Servers are used due to resolution issues with the ubuntu Vagrant Box image. |
+| Name      | Container Runtime                           | OS Version   | Special Notes                                                                                                            |
+| --------- | ------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| `centos7` | [Docker/Moby](https://github.com/moby/moby) | CentOS 7     | N/A                                                                                                                      |
+| `centos8` | [Docker/Moby](https://github.com/moby/moby) | CentOS 8     | `KUBE_NETWORK=calico` is forced, due to issues under CentOS 8 regarding `iptables`.                                      |
+| `centos`  | [Docker/Moby](https://github.com/moby/moby) | CentOS 7     | Use `centos7` in favor of this, as this "target" might be changed to `centos8` in a future release.                      |
+| `fedora`  | [Docker/Moby](https://github.com/moby/moby) | Fedora 30    | N/A                                                                                                                      |
+| `ubuntu`  | [Docker/Moby](https://github.com/moby/moby) | Ubuntu 18.04 | `KUBE_NETWORK=canal` is forced, due to issues under Ubuntu. Additionally Google DNS Servers are used as the nameservers. |
 
 To use a different set than the default `fedora` one's, add `BOX_OS=__NAME__` (where `__NAME__` is, e.g., `fedora`).
 
@@ -207,52 +218,74 @@ stop-master                    Stop/Halt the master VM.
 stop-nodes                     Stop/Halt all node VMs.
 stop-node-%                    Stop/Halt a node VM, where `%` is the number of the node.
 stop                           Stop/Halt master and all nodes VMs.
+tests                          Run shunit2 tests (`expect` command is required).
 token                          Generate a kubeadm join token, if needed (token file is `DIRECTORY_OF_MAKEFILE/.vagrant/KUBETOKEN`).
 up                             Start Kubernetes Vagrant multi-node cluster. Creates, starts and bootsup the master and node VMs.
+vagrant-plugins                Checks that vagrant-reload plugin is installed, if not try to install it
 vagrant-reload-master          Run vagrant reload for master VM.
-vagrant-reload-node-%          Run `vagrant reload` for specific node  VM.
 vagrant-reload-nodes           Run `vagrant reload` for all node VMs.
+vagrant-reload-node-%          Run `vagrant reload` for specific node  VM.
 vagrant-reload                 Run vagrant reload on master and nodes.
 versions                       Print the "imporant" tools versions out for easier debugging.
 ```
 
 ## Variables
 
-| Variable Name                   | Default Value            | Description                                                                                                                                                                                                                                  |
-| ------------------------------- | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `VAGRANT_DEFAULT_PROVIDER`      | `virtualbox`             | Which Vagrant provider to use. Available are `virtualbox` and `libvirt`.                                                                                                                                                                     |
-| `BOX_OS`                        | `fedora`                 | Which set of Vagrantfiles to use to start the VMs.                                                                                                                                                                                           |
-| `BOX_IMAGE`                     | `""` (empty)             | Override the VM box image used (only use for override purposes as the image is set based on the `BOX_OS` variable).                                                                                                                          |
-| `DISK_COUNT`                    | `1`                      | Set how many additional disks will be added to the VMs.                                                                                                                                                                                      |
-| `DISK_SIZE_GB`                  | `25` GB                  | Size of additional disks added to the VMs.                                                                                                                                                                                                   |
-| `MASTER_CPUS`                   | `2` Core                 | Amount of cores to use for the master VM.                                                                                                                                                                                                    |
-| `MASTER_MEMORY_SIZE_GB`         | `2` GB                   | Size of memory (in GB) to be allocated for the master VM.                                                                                                                                                                                    |
-| `NODE_CPUS`                     | `2`                      | Amount of cores to use for each node VM.                                                                                                                                                                                                     |
-| `NODE_MEMORY_SIZE_GB`           | `2` GB                   | Size of memory (in GB) to be allocated for each node VM.                                                                                                                                                                                     |
-| `NODE_COUNT`                    | `2`                      | How many worker nodes should be spawned.                                                                                                                                                                                                     |
-| `LIBVIRT_STORAGE_POOL`          | `"default"`              | Storage pool which libvirt should use. Libvirt only.                                                                                                                                                                                         |
-| `MASTER_IP`                     | `192.168.26.10`          | The Kubernetes master node IP.                                                                                                                                                                                                               |
-| `NODE_IP_NW`                    | `192.168.26.`            | The first three parts of the IPs used for the nodes.                                                                                                                                                                                         |
-| `POD_NW_CIDR`                   | `10.244.0.0/16`          | The Pod (container) network CIDR used for the CNI.                                                                                                                                                                                           |
-| `K8S_DASHBOARD`                 | `false`                  | Install the Kubernetes dashboard addon.                                                                                                                                                                                                      |
-| `K8S_DASHBOARD_VERSION`         | `v1.10.1`                | The Kubernetes dashboard addon version. Note it is recommended to at least version `1.10.1`.                                                                                                                                                 |
-| `KUBE_WEB_VIEW`                 | `false`                  | Install the kube-web-view from Henning Jacobs (Twitter: @try_except_). Access it using `kubectl port-forward -n kube-web-view service/kube-web-view 8080:8080` and point your browser to [`http://127.0.0.1:8080/`](http://127.0.0.1:8080/). |
-| `CLUSTER_NAME`                  | `k8s-vagrant-multi-node` | The name of the directory the Makefile is in. **This is not the Kubernetes cluster name**, due to `kubeadm init` limitations.                                                                                                                |
-| `KUBETOKEN`                     | `""` (empty)             | The `kubeadm` "join" token to use. Will be generated automatically using `/dev/urandom/` when empty.                                                                                                                                         |
-| `KUBEADM_INIT_FLAGS`            | `""` (empty)             | The `kubeadm init` flags to use. (When `KUBERNETES_VERSION` is set and `KUBEADM_INIT_FLAGS` is empty, `KUBEADM_INIT_FLAGS` will automatically be set to `--kubernetes-version=$KUBERNETES_VERSION`).                                         |
-| `KUBEADM_JOIN_FLAGS`            | `""` (empty)             | The `kubeadm join` flags to use.                                                                                                                                                                                                             |
-| `KUBERNETES_VERSION`            | `""` (empty)             | The `kubeadm` and `kubelet` package and API server version to install. Must be a fully qualified version string, e.g., `1.15.3` and not just `1.15`.                                                                                         |
-| `KUBERNETES_PKG_VERSION_SUFFIX` | `""` (empty)             | String which will be appended to the `kubeadm` and `kubelet` package versions when installed (only used for `vagrantfiles/ubuntu`).                                                                                                          |
-| `KUBE_PROXY_IPVS`               | `false`                  | Enable IPVS kernel modules to then use IPVS for the kube-proxy.                                                                                                                                                                              |
-| `KUBE_NETWORK`                  | `flannel`                | What CNI to install, if empty don't install any CNI. `flannel`, `canal` and `calico` are supported options. Ubuntu CNI is forced to use `canal` and can't be changed (see [Different OS / Vagrantfiles](#different-os--vagrantfiles)).       |
-| `KUBECTL_AUTO_CONF`             | `true`                   | If `kubectl` should be  automatically configured to be able to talk with the cluster (if disabled, removes need for `kubectl` binary).                                                                                                       |
-| `USER_SSHPUBKEY`                | `""` (empty)             | Your SSH **public key** (not private) to add to the VMs `vagrant` users `.ssh/authorized_keys` file during VM provisioning.                                                                                                                  |
-| `HTTP_PROXY`                    | `""` (empty)             | HTTP proxy to set for package installation and the Docker daemon (for pulling images).                                                                                                                                                       |
-| `HTTPS_PROXY`                   | `""` (empty)             | HTTPS proxy to set for package installation and the Docker daemon (for pulling images).                                                                                                                                                      |
-| `HTTP_PROXY_USERNAME`           | `""` (empty)             | Only used for CentOS `yum` and Fedora `dnf` package managers. HTTP and HTTPS proxy username.                                                                                                                                                 |
-| `HTTP_PROXY_PASSWORD`           | `""` (empty)             | Only used for CentOS `yum` and Fedora `dnf` package managers. HTTP and HTTPS proxy password.                                                                                                                                                 |
-| `NO_PROXY`                      | `""` (empty)             | `NO_PROXY` / `no_proxy` list to set for the Docker daemon (for pulling images). It is currently not possible to set this for package installation.                                                                                           |
-| `INSTALL_ADDITIONAL_PACKAGES`   | `""` (empty)             | List of additional packages to install in the VMs (packages are space separated; the variable is directly passed to the pacakge manager install command).                                                                                    |
+| Variable Name                   | Default Value            | Description                                                                                                                                                                                                                                                                          |
+| ------------------------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `VAGRANT_DEFAULT_PROVIDER`      | `virtualbox`             | Which Vagrant provider to use. Available are `virtualbox` and `libvirt`.                                                                                                                                                                                                             |
+| `BOX_OS`                        | `fedora`                 | Which set of Vagrantfiles to use to start the VMs, see [Different OS / Vagrantfiles](#different-os--vagrantfiles) section.                                                                                                                                                           |
+| `BOX_IMAGE`                     | `""` (empty)             | Override the VM box image used (only use for override purposes as the image is set based on the `BOX_OS` variable).                                                                                                                                                                  |
+| `DISK_COUNT`                    | `2`                      | Set how many additional disks will be added to the VMs.                                                                                                                                                                                                                              |
+| `DISK_SIZE_GB`                  | `20` GB                  | Size of additional disks added to the VMs.                                                                                                                                                                                                                                           |
+| `MASTER_CPUS`                   | `2` Core                 | Amount of cores to use for the master VM.                                                                                                                                                                                                                                            |
+| `MASTER_MEMORY_SIZE_GB`         | `2` GB                   | Size of memory (in GB) to be allocated for the master VM.                                                                                                                                                                                                                            |
+| `NODE_CPUS`                     | `1`                      | Amount of cores to use for each node VM.                                                                                                                                                                                                                                             |
+| `NODE_MEMORY_SIZE_GB`           | `2` GB                   | Size of memory (in GB) to be allocated for each node VM.                                                                                                                                                                                                                             |
+| `NODE_COUNT`                    | `2`                      | How many worker nodes should be spawned.                                                                                                                                                                                                                                             |
+| `LIBVIRT_STORAGE_POOL`          | `"default"`              | Storage pool which libvirt should use. Libvirt only.                                                                                                                                                                                                                                 |
+| `MASTER_IP`                     | `192.168.26.10`          | The Kubernetes master node IP.                                                                                                                                                                                                                                                       |
+| `NODE_IP_NW`                    | `192.168.26.`            | The first three parts of the IPs used for the nodes.                                                                                                                                                                                                                                 |
+| `POD_NW_CIDR`                   | `10.244.0.0/16`          | The Pod (container) network CIDR used for the CNI.                                                                                                                                                                                                                                   |
+| `K8S_DASHBOARD`                 | `false`                  | Install the Kubernetes dashboard addon.                                                                                                                                                                                                                                              |
+| `K8S_DASHBOARD_VERSION`         | `v1.10.1`                | The Kubernetes dashboard addon version. Note it is recommended to at least version `1.10.1`.                                                                                                                                                                                         |
+| `KUBE_WEB_VIEW`                 | `false`                  | Install the kube-web-view from Henning Jacobs (Twitter: @try_except_). Access it using `kubectl port-forward -n kube-web-view service/kube-web-view 8080:8080` and point your browser to [`http://127.0.0.1:8080/`](http://127.0.0.1:8080/).                                         |
+| `CLUSTER_NAME`                  | `k8s-vagrant-multi-node` | The name of the directory the Makefile is in. **This is not the Kubernetes cluster name**, due to `kubeadm init` limitations.                                                                                                                                                        |
+| `KUBETOKEN`                     | `""` (empty)             | The `kubeadm` "join" token to use. Will be generated automatically using `/dev/urandom/` when empty.                                                                                                                                                                                 |
+| `KUBEADM_INIT_FLAGS`            | `""` (empty)             | The `kubeadm init` flags to use. (When `KUBERNETES_VERSION` is set and `KUBEADM_INIT_FLAGS` is empty, `KUBEADM_INIT_FLAGS` will automatically be set to `--kubernetes-version=$KUBERNETES_VERSION`).                                                                                 |
+| `KUBEADM_JOIN_FLAGS`            | `""` (empty)             | The `kubeadm join` flags to use.                                                                                                                                                                                                                                                     |
+| `KUBERNETES_VERSION`            | `""` (empty)             | The `kubeadm` and `kubelet` package and API server version to install. Must be a fully qualified version, e.g., `1.18.3`, `v1.18.3`, but not just `1.18`.                                                                                                                            |
+| `KUBERNETES_PKG_VERSION_SUFFIX` | `""` (empty)             | String which will be appended to the `kubeadm` and `kubelet` package versions when installed (only used for `vagrantfiles/ubuntu`).                                                                                                                                                  |
+| `KUBE_PROXY_IPVS`               | `false`                  | Enable IPVS kernel modules to then use IPVS for the kube-proxy.                                                                                                                                                                                                                      |
+| `KUBE_NETWORK`                  | `calico`                 | What CNI to install, if empty don't install any CNI. `calico`, `canal`, `flannel` and `none` are supported options. `none` will cause no CNI to be installed. (See [Different OS / Vagrantfiles](#different-os--vagrantfiles) for OS specific overrides, `none` is never overriden). |
+| `KUBECTL_AUTO_CONF`             | `true`                   | If `kubectl` should be  automatically configured to be able to talk with the cluster (if disabled, removes need for `kubectl` binary).                                                                                                                                               |
+| `USER_SSHPUBKEY`                | `""` (empty)             | Your SSH **public key** (not private) to add to the VMs `vagrant` users `.ssh/authorized_keys` file during VM provisioning.                                                                                                                                                          |
+| `HTTP_PROXY`                    | `""` (empty)             | HTTP proxy to set for package installation and the Docker daemon (for pulling images).                                                                                                                                                                                               |
+| `HTTPS_PROXY`                   | `""` (empty)             | HTTPS proxy to set for package installation and the Docker daemon (for pulling images).                                                                                                                                                                                              |
+| `HTTP_PROXY_USERNAME`           | `""` (empty)             | Only used for CentOS `yum` and Fedora `dnf` package managers. HTTP and HTTPS proxy username.                                                                                                                                                                                         |
+| `HTTP_PROXY_PASSWORD`           | `""` (empty)             | Only used for CentOS `yum` and Fedora `dnf` package managers. HTTP and HTTPS proxy password.                                                                                                                                                                                         |
+| `NO_PROXY`                      | `""` (empty)             | `NO_PROXY` / `no_proxy` list to set for the Docker daemon (for pulling images). It is currently not possible to set this for package installation.                                                                                                                                   |
+| `INSTALL_ADDITIONAL_PACKAGES`   | `""` (empty)             | List of additional packages to install in the VMs (packages are space separated; the variable is directly passed to the pacakge manager install command).                                                                                                                            |
+| `VAGRANT`                       | `vagrant`                | Path to `vagrant` binary (only needed when `vagrant` is no in your `PATH`)                                                                                                                                                                                                           |
+| `KUBECTL`                       | `kubectl`                | Path to `kubectl` binary (only needed when `kubectl` is no in your `PATH`)                                                                                                                                                                                                           |
+| `PARALLEL_VM_START`             | `false`                  | (Only use if you know what the effects can be) If master and nodes should be started in parallel, this does not affect the nodes creation + startup. This is normally controlled by passing `-j JOBS` to the `make` command.                                                         |
+| `NETWORK_VM_MTU`                | `1500`                   | Set to, e.g., `1350`, to have the VMs interfaces MTU be set to `1350`. This can be used to prevent issues with VPNs running on the host machine (e.g., OpenVPN, Wireguard, etc).                                                                                                     |
+| `KUBE_NETWORK_MTU`              | `1450`                   | Use in combination with the `NETWORK_VM_MTU` parameter, this should be set to the value of `NETWORK_VM_MTU - 50`.                                                                                                                                                                    |
+
+
+## Troubleshooting
+
+### When usign Virtualbox as the provider `make up` hangs after it is done
+
+For unknown reasons the makefile is not exiting after it has printed the "cluster creation successful" message.
+The issue is being looked into it, till then just do `CTRL+C` to exit the `make up` command.
+
+### "I have a VPN running on my host machine, what should I look out for?"
+
+> **TL;DR** Set the following variables on your `make up` run as follows: `NETWORK_VM_MTU=1350` and `KUBE_NETWORK_MTU=1300`.
+
+Set the `NETWORK_VM_MTU` and `KUBE_NETWORK_MTU` according to the MTU of your VPN interface(s) - "overhead" (`50`).
+Using the values in the `TL;DR` should work for "99% percent" of common VPNs.
 
 ## Demo
 
